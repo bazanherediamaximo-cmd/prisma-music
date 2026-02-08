@@ -1,8 +1,5 @@
-// --- CONFIGURACIÓN "ROMPE-BLOQUEOS" ---
-// Usamos este proxy que suele ser más rápido y permisivo para audio
-const PROXY = "https://corsproxy.io/?";
-// Instancia de Invidious (si falla, cambiamos esta url)
-const API_URL = "https://invidious.drgns.space/api/v1"; 
+// --- CONFIGURACIÓN PIPED (Más estable) ---
+const API_URL = "https://pipedapi.kavin.rocks"; 
 
 // --- ESTADO ---
 let playlist = [];
@@ -15,9 +12,8 @@ const views = document.querySelectorAll('.view');
 const navBtns = document.querySelectorAll('.nav-btn');
 const resultsArea = document.getElementById('resultsArea');
 const playlistContainer = document.getElementById('playlistContainer');
-const statusText = document.getElementById('statusText'); // Si tenés un label de estado
 
-// --- 1. NAVEGACIÓN (ISLA) ---
+// --- 1. NAVEGACIÓN ---
 navBtns.forEach(btn => {
     btn.addEventListener('click', () => {
         navBtns.forEach(b => b.classList.remove('active'));
@@ -27,7 +23,7 @@ navBtns.forEach(btn => {
     });
 });
 
-// --- 2. BUSCADOR CON API (EL FIX) ---
+// --- 2. BUSCADOR (MODO PIPED) ---
 const searchBtn = document.getElementById('searchBtn');
 const searchInput = document.getElementById('searchInput');
 
@@ -35,68 +31,80 @@ searchBtn.addEventListener('click', async () => {
     const query = searchInput.value;
     if (!query) return;
 
-    resultsArea.innerHTML = '<div style="text-align:center; padding:20px; color:#666;">Buscando...</div>';
+    resultsArea.innerHTML = '<div style="text-align:center; padding:20px; color:#aaa;">Buscando en Piped... 🎧</div>';
     
     try {
-        // Truco: Pasamos la URL de la API a través del Proxy
-        const targetUrl = `${API_URL}/search?q=${encodeURIComponent(query)}&type=video`;
-        const res = await fetch(PROXY + encodeURIComponent(targetUrl));
+        // Piped no suele necesitar proxy cors para la búsqueda
+        const res = await fetch(`${API_URL}/search?q=${encodeURIComponent(query)}&filter=music_songs`);
         const data = await res.json();
         
-        resultsArea.innerHTML = ''; // Limpiar
+        resultsArea.innerHTML = ''; 
 
-        // Renderizar resultados
-        data.slice(0, 15).forEach(video => {
+        if (!data.items || data.items.length === 0) {
+            resultsArea.innerHTML = '<div style="padding:20px;">No encontré nada, bro.</div>';
+            return;
+        }
+
+        data.items.slice(0, 15).forEach(video => {
+            // Filtramos solo videos/canciones
+            if(video.type !== 'stream') return;
+
             const div = document.createElement('div');
-            div.className = 'queue-item'; // Reutilizamos estilo
+            div.className = 'queue-item'; 
             div.style.marginBottom = '10px';
             
             div.innerHTML = `
                 <div style="flex:1;">
                     <div style="font-weight:600; color:#fff;">${video.title}</div>
-                    <div style="font-size:12px; color:#aaa;">${video.author}</div>
+                    <div style="font-size:12px; color:#aaa;">${video.uploaderName}</div>
                 </div>
                 <button class="download-btn" style="background:#fff; color:#000; border:none; padding:8px 15px; border-radius:20px; font-weight:bold; cursor:pointer;">
                     ⬇
                 </button>
             `;
             
-            // Lógica de Descarga al clickear
             const btn = div.querySelector('.download-btn');
-            btn.onclick = () => descargarCancion(video.videoId, video.title, video.author, btn);
+            // La URL del video en Piped empieza con /watch?v=
+            const videoId = video.url.split('v=')[1];
+            btn.onclick = () => descargarCancion(videoId, video.title, video.uploaderName, btn);
             
             resultsArea.appendChild(div);
         });
         
     } catch (e) {
         console.error(e);
-        resultsArea.innerHTML = '<div style="color:red; text-align:center;">Error de API. Probá buscar de nuevo.</div>';
+        resultsArea.innerHTML = '<div style="color:red; text-align:center;">Error conectando a Piped.</div>';
     }
 });
 
-// --- 3. FUNCIÓN DE DESCARGA REAL (CACHE) ---
+// --- 3. DESCARGA (STREAM PIPED) ---
 async function descargarCancion(videoId, title, artist, btnElement) {
     btnElement.innerText = "⏳";
     btnElement.disabled = true;
 
     try {
-        // 1. Buscar el link del audio
-        const infoUrl = `${API_URL}/videos/${videoId}`;
-        const resInfo = await fetch(PROXY + encodeURIComponent(infoUrl));
-        const dataInfo = await resInfo.json();
+        const res = await fetch(`${API_URL}/streams/${videoId}`);
+        const data = await res.json();
         
-        // 2. Filtrar solo audio (m4a es mejor calidad/peso)
-        const format = dataInfo.formatStreams.find(f => f.itag === "140") || dataInfo.formatStreams[0];
-        const audioUrl = format.url;
+        // Buscamos el audio stream (m4a)
+        const audioStream = data.audioStreams.find(s => s.format === 'M4A') || data.audioStreams[0];
+        
+        if (!audioStream) throw new Error("No hay audio");
 
-        // 3. DESCARGAR Y GUARDAR EN CACHE (Esto permite el offline)
+        // Acá sí usamos el Cache API
         const cache = await caches.open('prisma-music-offline-v1');
         
-        // Fetch real del archivo de audio a través del proxy
-        const audioResponse = await fetch(PROXY + encodeURIComponent(audioUrl));
-        const audioBlob = await audioResponse.blob();
-        
-        // Crear una respuesta sintética para guardar en caché
+        // Fetch del audio (Piped a veces requiere proxy, a veces no. Probamos directo primero)
+        let audioBlob;
+        try {
+            const r = await fetch(audioStream.url);
+            audioBlob = await r.blob();
+        } catch (err) {
+            // Si falla directo, usamos proxy
+            const r = await fetch("https://corsproxy.io/?" + encodeURIComponent(audioStream.url));
+            audioBlob = await r.blob();
+        }
+
         const cacheKey = `/offline/${videoId}`;
         const responseToCache = new Response(audioBlob, {
             headers: { 'Content-Type': 'audio/mp4' }
@@ -104,12 +112,11 @@ async function descargarCancion(videoId, title, artist, btnElement) {
         
         await cache.put(cacheKey, responseToCache);
 
-        // 4. Agregar a la Playlist automáticamente
         btnElement.innerText = "✅";
         addToPlaylist({
             title: title,
             artist: artist,
-            url: cacheKey, // Usamos la clave del caché como URL
+            url: cacheKey,
             isOffline: true
         });
 
@@ -117,15 +124,15 @@ async function descargarCancion(videoId, title, artist, btnElement) {
         console.error(e);
         btnElement.innerText = "❌";
         btnElement.disabled = false;
-        alert("Falló la descarga. Probá otro tema.");
+        alert("No se pudo bajar. Google está terrible hoy.");
     }
 }
 
-// --- 4. REPRODUCTOR (SOPORTA OFFLINE) ---
+// --- 4. REPRODUCTOR ---
+// (Misma lógica que antes, no hace falta cambiar mucho acá)
 function addToPlaylist(track) {
     playlist.push(track);
     renderPlaylist();
-    // Si es la primera, cargarla
     if (playlist.length === 1) playTrack(0);
 }
 
@@ -134,57 +141,39 @@ async function playTrack(index) {
     currentTrackIndex = index;
     const track = playlist[index];
     
-    // Actualizar UI
     document.getElementById('title').innerText = track.title;
     document.getElementById('artist').innerText = track.artist;
     
-    try {
-        let srcToPlay = track.url;
-
-        // Si es offline, recuperar el Blob del caché
-        if (track.isOffline) {
-            const cache = await caches.open('prisma-music-offline-v1');
-            const response = await cache.match(track.url);
-            if (response) {
-                const blob = await response.blob();
-                srcToPlay = URL.createObjectURL(blob);
-            }
+    let srcToPlay = track.url;
+    if (track.isOffline) {
+        const cache = await caches.open('prisma-music-offline-v1');
+        const response = await cache.match(track.url);
+        if (response) {
+            const blob = await response.blob();
+            srcToPlay = URL.createObjectURL(blob);
         }
-        
-        audioPlayer.src = srcToPlay;
-        audioPlayer.play().then(() => {
-            isPlaying = true;
-            updatePlayIcon();
-        }).catch(e => console.log("Esperando interacción..."));
-
-        renderPlaylist();
-        
-    } catch (e) {
-        console.error("Error al reproducir", e);
     }
+    
+    audioPlayer.src = srcToPlay;
+    audioPlayer.play().then(() => {
+        isPlaying = true;
+        updatePlayIcon();
+    }).catch(e => console.log("User interaction needed"));
+    
+    renderPlaylist();
 }
 
 // Controles Básicos
 const playBtn = document.getElementById('playBtn');
 const progressBar = document.getElementById('progressBar');
+const nextBtn = document.getElementById('nextBtn');
+const prevBtn = document.getElementById('prevBtn');
 
-playBtn.addEventListener('click', () => {
-    if(playlist.length === 0) return;
-    isPlaying ? audioPlayer.pause() : audioPlayer.play();
-    isPlaying = !isPlaying;
-    updatePlayIcon();
-});
-
-audioPlayer.addEventListener('ended', () => {
-    if (currentTrackIndex < playlist.length - 1) playTrack(currentTrackIndex + 1);
-});
-
-audioPlayer.addEventListener('timeupdate', () => {
-    if(audioPlayer.duration) {
-        const percent = (audioPlayer.currentTime / audioPlayer.duration) * 100;
-        progressBar.style.width = `${percent}%`;
-    }
-});
+playBtn.addEventListener('click', () => { isPlaying ? audioPlayer.pause() : audioPlayer.play(); isPlaying = !isPlaying; updatePlayIcon(); });
+nextBtn.addEventListener('click', () => currentTrackIndex < playlist.length - 1 ? playTrack(currentTrackIndex + 1) : playTrack(0));
+prevBtn.addEventListener('click', () => currentTrackIndex > 0 ? playTrack(currentTrackIndex - 1) : null);
+audioPlayer.addEventListener('ended', () => nextBtn.click());
+audioPlayer.addEventListener('timeupdate', () => { if(audioPlayer.duration) progressBar.style.width = (audioPlayer.currentTime/audioPlayer.duration)*100 + '%'; });
 
 function updatePlayIcon() {
     playBtn.innerHTML = isPlaying 
@@ -196,23 +185,22 @@ function renderPlaylist() {
     playlistContainer.innerHTML = '';
     playlist.forEach((track, i) => {
         const div = document.createElement('div');
-        div.className = `queue-item ${i === currentTrackIndex ? 'active' : ''}`;
-        div.style.cssText = "padding:12px; border-bottom:1px solid rgba(255,255,255,0.1); cursor:pointer; display:flex; justify-content:space-between;";
-        if(i === currentTrackIndex) div.style.background = "rgba(255,255,255,0.1)";
-        
-        div.innerHTML = `
-            <div style="color:${i === currentTrackIndex ? '#fff' : '#aaa'}">${track.title}</div>
-            ${track.isOffline ? '<span>💾</span>' : ''}
-        `;
+        div.className = `queue-item`;
+        div.style.cssText = `padding:12px; border-bottom:1px solid rgba(255,255,255,0.1); cursor:pointer; display:flex; justify-content:space-between; ${i === currentTrackIndex ? 'background:rgba(255,255,255,0.1);' : ''}`;
+        div.innerHTML = `<div style="color:${i === currentTrackIndex ? '#fff' : '#aaa'}">${track.title}</div>${track.isOffline ? '<span>✅</span>' : ''}`;
         div.onclick = () => playTrack(i);
         playlistContainer.appendChild(div);
     });
 }
 
-// Service Worker (Esencial para que funcione offline)
-if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js');
+// Service Worker + Carga Manual
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
 
-}
-
-
+document.getElementById('multiFile').addEventListener('change', (e) => {
+    Array.from(e.target.files).forEach(file => {
+        const url = URL.createObjectURL(file);
+        playlist.push({ title: file.name.replace(/\.[^/.]+$/, ""), artist: "Local", url: url, isOffline: false });
+    });
+    renderPlaylist();
+    if(playlist.length === e.target.files.length) playTrack(0);
+});
