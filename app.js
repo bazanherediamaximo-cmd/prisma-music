@@ -2,7 +2,7 @@
 // Usamos este proxy que suele ser más rápido y permisivo para audio
 const PROXY = "https://corsproxy.io/?";
 // Instancia de Invidious (si falla, cambiamos esta url)
-const API_URL = "https://inv.tux.rs/api/v1"; 
+const API_URL = "https://inv.nadeko.net/api/v1"; 
 
 // --- ESTADO ---
 let playlist = [];
@@ -212,4 +212,5 @@ function renderPlaylist() {
 // Service Worker (Esencial para que funcione offline)
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js');
+
 }
