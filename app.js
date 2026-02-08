@@ -2,7 +2,7 @@
 // Usamos este proxy que suele ser más rápido y permisivo para audio
 const PROXY = "https://corsproxy.io/?";
 // Instancia de Invidious (si falla, cambiamos esta url)
-const API_URL = "https://vid.puffyan.us/api/v1"; 
+const API_URL = "https://invidious.drgns.space/api/v1"; 
 
 // --- ESTADO ---
 let playlist = [];
@@ -214,4 +214,5 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js');
 
 }
+
 
